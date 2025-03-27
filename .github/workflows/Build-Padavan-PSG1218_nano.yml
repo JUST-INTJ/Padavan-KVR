@@ -30,14 +30,27 @@ jobs:
         sh dl_toolchain.sh
         mkdir -p /opt/images/
 
-    - name: Apply Compatibility Patches
+    - name: Locate and Patch Threadpool File
       run: |
-        # 修复 pidfd_open 问题
-        sed -i 's/SYS_pidfd_open/__NR_pidfd_open/g' /opt/rt-n56u/trunk/user/msd_lite/msd_lite/src/liblcb/src/threadpool/threadpool.c || true
+        # 动态定位文件位置
+        THREADPOOL_FILE=$(find /opt/rt-n56u -name "threadpool.c" | head -1)
         
-        # 添加系统调用号定义 (Linux 5.1+)
-        grep -q "__NR_pidfd_open" /opt/rt-n56u/trunk/user/msd_lite/msd_lite/src/liblcb/src/threadpool/threadpool.c || \
-        echo "#define __NR_pidfd_open 434" >> /opt/rt-n56u/trunk/user/msd_lite/msd_lite/src/liblcb/src/threadpool/threadpool.c
+        if [ -f "$THREADPOOL_FILE" ]; then
+          echo "Found threadpool.c at: $THREADPOOL_FILE"
+          
+          # 备份原始文件
+          sudo cp "$THREADPOOL_FILE" "${THREADPOOL_FILE}.bak"
+          
+          # 应用修复
+          sudo sed -i 's/SYS_pidfd_open/__NR_pidfd_open/g' "$THREADPOOL_FILE" || true
+          
+          # 确保宏定义存在
+          if ! grep -q "__NR_pidfd_open" "$THREADPOOL_FILE"; then
+            echo "#define __NR_pidfd_open 434" | sudo tee -a "$THREADPOOL_FILE"
+          fi
+        else
+          echo "Warning: threadpool.c not found, skipping patch"
+        fi
 
     - name: Build Firmware
       env:
@@ -46,17 +59,20 @@ jobs:
         cd /opt/rt-n56u/trunk
         
         # 验证配置文件存在
-        [ ! -f configs/templates/$TNAME.config ] && echo "Error: Missing config file" && exit 1
+        if [ ! -f "configs/templates/$TNAME.config" ]; then
+          echo "Error: Missing config file for $TNAME"
+          exit 1
+        fi
         
         # 准备配置
-        cp -f configs/templates/$TNAME.config .config
+        cp -f "configs/templates/$TNAME.config" .config
         
         # 清理构建环境
         sudo ./clear_tree
         
         # 开始构建（添加详细日志）
         echo "Starting build process..."
-        sudo ./build_firmware_modify $TNAME 0 | tee build.log
+        sudo ./build_firmware_modify "$TNAME" 0 | tee build.log
         
         # 验证输出文件
         if ls images/*.trx >/dev/null 2>&1; then
