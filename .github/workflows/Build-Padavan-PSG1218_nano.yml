@@ -5,14 +5,14 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04  # 升级到更新的 Ubuntu 版本
+    runs-on: ubuntu-22.04
     if: github.event.repository.owner.id == github.event.sender.id
 
     steps:
     - name: Checkout
-      uses: actions/checkout@v4  # 更新到最新稳定版
+      uses: actions/checkout@v4
 
-    - name: Initialization environment
+    - name: Setup Environment
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
@@ -23,55 +23,55 @@ jobs:
           help2man pkg-config zlib1g-dev libgmp3-dev libmpc-dev libmpfr-dev \
           libncurses5-dev libltdl-dev wget libssl-dev
 
-    - name: Clone source code
-      env:
-        KERNEL: 3.4
+    - name: Clone Source Code
       run: |
         git clone --depth=1 https://github.com/JUST-INTJ/Padavan-KVR.git /opt/rt-n56u
         cd /opt/rt-n56u/toolchain-mipsel
         sh dl_toolchain.sh
         mkdir -p /opt/images/
 
-    - name: Apply kernel compatibility patch
+    - name: Apply Compatibility Patches
       run: |
-        # 修复 pidfd_open 兼容性问题
+        # 修复 pidfd_open 问题
         sed -i 's/SYS_pidfd_open/__NR_pidfd_open/g' /opt/rt-n56u/trunk/user/msd_lite/msd_lite/src/liblcb/src/threadpool/threadpool.c || true
-        # 移除不支持的编译选项
-        find /opt/rt-n56u -type f -name "CMakeLists.txt" -exec sed -i 's/-Wno-unsafe-buffer-usage//g' {} \;
+        
+        # 添加系统调用号定义 (Linux 5.1+)
+        grep -q "__NR_pidfd_open" /opt/rt-n56u/trunk/user/msd_lite/msd_lite/src/liblcb/src/threadpool/threadpool.c || \
+        echo "#define __NR_pidfd_open 434" >> /opt/rt-n56u/trunk/user/msd_lite/msd_lite/src/liblcb/src/threadpool/threadpool.c
 
     - name: Build Firmware
       env:
         TNAME: PSG1218
-        KERNEL: 3.4
       run: |
         cd /opt/rt-n56u/trunk
-        if [ ! -f configs/templates/$TNAME.config ]; then
-          echo "Error: configs/templates/$TNAME.config not found"
-          exit 1
-        fi
         
+        # 验证配置文件存在
+        [ ! -f configs/templates/$TNAME.config ] && echo "Error: Missing config file" && exit 1
+        
+        # 准备配置
         cp -f configs/templates/$TNAME.config .config
         
-        # 清理之前可能存在的构建缓存
+        # 清理构建环境
         sudo ./clear_tree
         
-        # 使用更稳定的构建命令
-        sudo ./build_firmware_modify $TNAME 0 || (echo "Build failed!"; exit 1)
+        # 开始构建（添加详细日志）
+        echo "Starting build process..."
+        sudo ./build_firmware_modify $TNAME 0 | tee build.log
         
-        # 检查生成的固件文件
-        if ls images/*.trx 1> /dev/null 2>&1; then
-          sudo mkdir -p /opt/images/
+        # 验证输出文件
+        if ls images/*.trx >/dev/null 2>&1; then
           sudo mv -f images/*.trx /opt/images/
-          echo "Build successful! Firmware files:"
+          echo "Build successful!"
           ls -lh /opt/images/
         else
-          echo "Error: No firmware file generated!"
+          echo "Build failed! Log tail:"
+          tail -n 50 build.log
           exit 1
         fi
 
-    - name: Upload packages
-      uses: actions/upload-artifact@v3  # 使用稳定版本
-      if: always()
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
       with:
-        name: Padavan-packages
-        path: /opt/images
+        name: firmware-binaries
+        path: /opt/images/*.trx
+        if-no-files-found: error
